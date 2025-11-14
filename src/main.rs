@@ -100,6 +100,14 @@ fn main() -> Result<()> {
     // Collect arguments
     let args: Args = Args::parse_from(wild::args());
 
+    // Check if any files were provided
+    if args.file_names.is_empty() {
+        eprintln!("Error: No input files specified.");
+        eprintln!("\nUsage: dxf2elmt <file.dxf> [options]");
+        eprintln!("\nFor more information, use: dxf2elmt --help");
+        std::process::exit(1);
+    }
+
     // Load dxf file
     let dxf_loop_span = span!(Level::TRACE, "Looping over dxf files");
     let dxf_loop_guard = dxf_loop_span.enter();
