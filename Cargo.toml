@@ -9,6 +9,18 @@ repository = "https://github.com/Vadoola/dxf2elmt"
 license = "MIT"
 rust-version = "1.79.0"
 
+[[bin]]
+name = "dxf2elmt"
+path = "src/main.rs"
+
+[[bin]]
+name = "dxf2elmt-web"
+path = "src/bin/web.rs"
+
+[[bin]]
+name = "dxf2elmt-desktop"
+path = "src/bin/desktop.rs"
+
 [profile.release]
 strip = true
 lto = true
@@ -28,14 +40,40 @@ wild = "2.2"
 rayon = "1.10.0"
 hex_color = "3.0.0"
 itertools = "0.14"
-parley = "0.2.0"
 unicode-segmentation = "1.12.0"
 tracing = "0.1"
 venator = { version = "1.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dependencies.dioxus]
+version = "0.7"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.dioxus]
+version = "0.7"
+features = ["desktop"]
+
+[dependencies.dioxus-web]
+version = "0.7"
+
+[dependencies.dioxus-desktop]
+version = "0.7"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.dioxus]
+version = "0.7"
+features = ["web"]
 
 #[lints.clippy]
 #unwrap_used = "deny"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# En WASM, uuid necesita una fuente de aleatoriedad: activamos `js`
+uuid = { version = "1.16", features = ["serde", "v4", "js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.15"
+parley = "0.2.0"
 
 
 #undecided on how I want to handle logging in this crate right now.

@@ -6,26 +6,15 @@
 )]
 //#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-extern crate dxf;
-extern crate simple_xml_builder;
-extern crate unicode_segmentation;
-
-use anyhow::{Context, Ok, Result};
+use anyhow::Result;
 use clap::Parser;
-use dxf::entities::EntityType;
-use dxf::Drawing;
-use qelmt::Definition;
-//use rayon::prelude::*;
-use simple_xml_builder::XMLElement;
-use std::time::Instant;
+use dxf2elmt::{convert_dxf_file, ConversionOptions};
 use std::{io, path::PathBuf};
-use tracing::{span, trace, warn, Level};
+use tracing::{span, trace, Level};
 use tracing_subscriber::prelude::*;
 
 #[cfg(feature = "venator")]
 use venator::Venator;
-
-mod qelmt;
 
 #[derive(Parser, Debug)]
 #[command(name = "dxf2elmt")]
@@ -52,7 +41,6 @@ struct Args {
     info: bool,
 }
 
-pub mod file_writer;
 
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
@@ -94,9 +82,6 @@ fn main() -> Result<()> {
 
     trace!("Starting dxf2elmt");
 
-    // Start recording time
-    let now: Instant = Instant::now();
-
     // Collect arguments
     let args: Args = Args::parse_from(wild::args());
 
@@ -108,105 +93,43 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Load dxf file
+    // Convert files
     let dxf_loop_span = span!(Level::TRACE, "Looping over dxf files");
     let dxf_loop_guard = dxf_loop_span.enter();
+    
+    let options = ConversionOptions {
+        spline_step: args.spline_step,
+        verbose: args.verbose,
+        info: args.info,
+    };
+
     for file_name in args.file_names {
-        let friendly_file_name = file_name
-            .file_stem()
-            .unwrap_or_else(|| file_name.as_os_str())
-            .to_string_lossy();
-        let drawing: Drawing = Drawing::load_file(&file_name).context(format!(
-            "Failed to load {friendly_file_name}...\n\tMake sure the file is a valid .dxf file.",
-        ))?;
-        let q_elmt = Definition::new(friendly_file_name.clone(), args.spline_step, &drawing);
-        if !args.verbose && args.info {
-            println!("{friendly_file_name} loaded...");
+        let result = convert_dxf_file(&file_name, &options)?;
+
+        if options.info {
+            if let Some(stats) = result.stats {
+                println!("Conversion complete!\n");
+                println!("STATS");
+                println!("~~~~~~~~~~~~~~~");
+                println!("Circles: {}", stats.circles);
+                println!("Lines: {}", stats.lines);
+                println!("Arcs: {}", stats.arcs);
+                println!("Splines: {}", stats.splines);
+                println!("Texts: {}", stats.texts);
+                println!("Ellipses: {}", stats.ellipses);
+                println!("Polylines: {}", stats.polylines);
+                println!("LwPolylines: {}", stats.lwpolylines);
+                println!("Solids: {}", stats.solids);
+                println!("Blocks: {}", stats.blocks);
+                println!("Currently Unsupported: {}", stats.unsupported);
+                println!("\nTime Elapsed: {} ms", stats.elapsed_ms);
+            }
         }
 
-        // Initialize counts
-        let mut circle_count: u32 = 0;
-        let mut line_count: u32 = 0;
-        let mut arc_count: u32 = 0;
-        let mut spline_count: u32 = 0;
-        let mut text_count: u32 = 0;
-        let mut ellipse_count: u32 = 0;
-        let mut polyline_count: u32 = 0;
-        let mut lwpolyline_count: u32 = 0;
-        let mut solid_count: u32 = 0;
-        let mut block_count: u32 = 0;
-        let mut other_count: u32 = 0;
-
-        // Loop through all entities, counting the element types
-        //drawing.entities().for_each(|e| match e.specific {
-        drawing.entities().for_each(|e| match e.specific {
-            EntityType::Circle(ref _circle) => {
-                circle_count += 1;
+        if options.verbose {
+            if let Some(xml) = result.xml_content {
+                print!("{xml}");
             }
-            EntityType::Line(ref _line) => {
-                line_count += 1;
-            }
-            EntityType::Arc(ref _arc) => {
-                arc_count += 1;
-            }
-            EntityType::Spline(ref _spline) => {
-                spline_count += 1;
-            }
-            EntityType::Text(ref _text) => {
-                text_count += 1;
-            }
-            EntityType::Ellipse(ref _ellipse) => {
-                ellipse_count += 1;
-            }
-            EntityType::Polyline(ref _polyline) => {
-                polyline_count += 1;
-            }
-            EntityType::LwPolyline(ref _lwpolyline) => {
-                lwpolyline_count += 1;
-            }
-            EntityType::Solid(ref _solid) => {
-                solid_count += 1;
-            }
-            EntityType::Insert(ref _insert) => {
-                block_count += 1;
-            }
-            _ => {
-                other_count += 1;
-            }
-        });
-
-        // Create output file for .elmt
-        let out_file = file_writer::create_file(args.verbose, args.info, &file_name)?;
-
-        // Write to output file
-        let out_xml = XMLElement::from(&q_elmt);
-        out_xml
-            .write(&out_file)
-            .context("Failed to write output file.")?;
-
-        if args.info {
-            println!("Conversion complete!\n");
-
-            // Print stats
-            println!("STATS");
-            println!("~~~~~~~~~~~~~~~");
-            println!("Circles: {circle_count}");
-            println!("Lines: {line_count}");
-            println!("Arcs: {arc_count}");
-            println!("Splines: {spline_count}");
-            println!("Texts: {text_count}");
-            println!("Ellipses: {ellipse_count}");
-            println!("Polylines: {polyline_count}");
-            println!("LwPolylines: {lwpolyline_count}");
-            println!("Solids: {solid_count}");
-            println!("Blocks: {block_count}");
-            println!("Currently Unsupported: {other_count}");
-
-            println!("\nTime Elapsed: {} ms", now.elapsed().as_millis());
-        }
-
-        if args.verbose {
-            print!("{out_xml}");
         }
     }
     drop(dxf_loop_guard);

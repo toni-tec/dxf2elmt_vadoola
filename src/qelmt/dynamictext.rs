@@ -12,6 +12,112 @@ use uuid::Uuid;
 
 use super::{HAlignment, VAlignment};
 
+// Normaliza cadenas MTEXT (DXF) eliminando códigos de formato y aplicando saltos de línea.
+// Maneja casos comunes: \P (newline), \f...\; (fuente), \H...\; (altura),
+// \W...\; (ancho), \~ (espacio), \\ (barra invertida literal), \S...\; (apilados -> texto plano).
+fn normalize_mtext(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        // Elimina llaves que usan muchos CAD para agrupar formato en MTEXT
+        if ch == '{' || ch == '}' {
+            continue;
+        }
+
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+
+        // Código de control MTEXT
+        match chars.peek().copied() {
+            Some('P') => {
+                // Salto de línea
+                let _ = chars.next();
+                out.push('\n');
+            }
+            Some('~') => {
+                // Espacio no separable
+                let _ = chars.next();
+                out.push(' ');
+            }
+            Some('\\') => {
+                // Barra invertida escapada
+                let _ = chars.next();
+                out.push('\\');
+            }
+            Some('f') | Some('H') | Some('W') => {
+                // \f...\;  \H...\;  \W...\;  -> omitir hasta ';'
+                let _ = chars.next(); // consume el indicador
+                while let Some(c) = chars.next() {
+                    if c == ';' {
+                        break;
+                    }
+                }
+            }
+            Some('S') => {
+                // \S...\; apilados (p. ej. fracciones). Convertimos a texto plano.
+                let _ = chars.next(); // consume 'S'
+                let mut buf = String::new();
+                while let Some(c) = chars.next() {
+                    if c == ';' {
+                        break;
+                    }
+                    buf.push(c);
+                }
+                // Heurística simple: A^B o A#B o A/B -> "A/B"
+                if let Some(pos) = buf.find(['^', '#'].as_ref()) {
+                    let (a, b) = buf.split_at(pos);
+                    let b = &b[1..];
+                    out.push_str(a);
+                    out.push('/');
+                    out.push_str(b);
+                } else {
+                    out.push_str(&buf);
+                }
+            }
+            _ => {
+                // Código no reconocido: mantener backslash literal y continuar
+                out.push('\\');
+            }
+        }
+    }
+
+    out
+}
+
+// Extrae la familia de fuente desde el primer bloque \f...\; de una cadena MTEXT.
+// Ejemplos:
+//   {\fGaramond|b0|i1|c0|p18;Sofrel}  -> "Garamond"
+//   {\fSwis721 BlkEx BT|b0|i0|c0|p34;RS485i} -> "Swis721 BlkEx BT"
+fn extract_mtext_font(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'\\' && bytes[i + 1] == b'f' {
+            // inicio de bloque fuente. Capturamos hasta ';'
+            i += 2;
+            let start = i;
+            while i < bytes.len() && bytes[i] != b';' {
+                i += 1;
+            }
+            let block = &input[start..i];
+            // block típico: Family|b0|i0|c0|p34
+            let family = block.split('|').next().unwrap_or("").trim();
+            if !family.is_empty() {
+                // quitar llaves si estuvieran pegadas al inicio
+                let family = family.trim_matches(['{', '}']);
+                if !family.is_empty() {
+                    return Some(family.to_string());
+                }
+            }
+            break;
+        }
+        i += 1;
+    }
+    None
+}
 #[derive(Debug)]
 pub struct DynamicText {
     text: String,
@@ -222,9 +328,9 @@ impl<'a> DTextBuilder<'a> {
                 //in group 1. If the text string is greater than 250 characters, the string is divided into 250-character chunks, which appear in
                 //one or more group 3 codes. If group 3 codes are used, the last group is a group 1 and has fewer than 250 characters"
                 {
-                    let mut val = mtxt.extended_text.join("");
-                    val.push_str(&mtxt.text);
-                    val.replace("\\P", "\n")
+                    let mut raw = mtxt.extended_text.join("");
+                    raw.push_str(&mtxt.text);
+                    normalize_mtext(&raw)
                 },
                 HAlignment::from(mtxt.attachment_point),
                 VAlignment::from(mtxt.attachment_point),
@@ -274,6 +380,16 @@ impl<'a> DTextBuilder<'a> {
         /*dbg!(&value);
         dbg!(&y);
         dbg!(&self.text);*/
+        // Intentar extraer familia de fuente desde el bloque \f...\; del MTEXT/TEXT
+        let inferred_family = match self.text {
+            TextEntity::MText(mtxt) => {
+                let mut raw = mtxt.extended_text.join("");
+                raw.push_str(&mtxt.text);
+                extract_mtext_font(&raw)
+            }
+            _ => None,
+        };
+
         DynamicText {
             //x: x - (calc_width as f64/2.0),
             x,
@@ -285,19 +401,23 @@ impl<'a> DTextBuilder<'a> {
                 0.0
             },
             uuid: Uuid::new_v4(),
-            font: if style_name == "STANDARD" {
-                FontInfo {
-                    point_size: text_height,
-                    ..Default::default()
+            font: {
+                let mut f = if style_name == "STANDARD" {
+                    FontInfo {
+                        point_size: text_height,
+                        ..Default::default()
+                    }
+                } else {
+                    // mismo comportamiento que STANDARD, pero permitimos sobrescribir la familia
+                    FontInfo {
+                        point_size: text_height,
+                        ..Default::default()
+                    }
+                };
+                if let Some(fam) = inferred_family {
+                    f.family = fam;
                 }
-            } else {
-                //clearly right now this is exactly the same as the main body of the if block
-                //I'm jus putting this in for now, to compile while I get the font handling
-                //working correctly
-                FontInfo {
-                    point_size: text_height,
-                    ..Default::default()
-                }
+                f
             },
             reference_rectangle_width, //liest aus der dxf-Datei!!!
             h_alignment,

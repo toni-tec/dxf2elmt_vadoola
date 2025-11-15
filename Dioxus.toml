@@ -1,0 +1,12 @@
+[application]
+name = "dxf2elmt-web"
+default_platform = "web"
+out_dir = "dist"
+asset_dir = "assets"
+
+[web.app]
+title = "DXF to ELMT Converter"
+
+[web.watcher]
+watch_path = ["src"]
+
